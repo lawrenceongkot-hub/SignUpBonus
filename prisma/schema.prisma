@@ -1,0 +1,96 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum SessionStatus {
+  WAITING
+  PAIRING
+  CONNECTING
+  CONNECTED
+  SCREEN_SHARING
+  REMOTE_INTERACTION
+  DISCONNECTED
+  FAILED
+  ENDED
+}
+
+model Operator {
+  id        String    @id @default(cuid())
+  name      String
+  email     String?   @unique
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  apiKeys   ApiKey[]
+  sessions  Session[]
+}
+
+model ApiKey {
+  id          String    @id @default(cuid())
+  keyHash     String    @unique
+  keyPrefix   String
+  label       String
+  operatorId  String?
+  operator    Operator? @relation(fields: [operatorId], references: [id], onDelete: SetNull)
+  createdAt   DateTime  @default(now())
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  lastUsedAt  DateTime?
+  sessions    Session[]
+
+  @@index([keyHash])
+  @@index([revokedAt])
+}
+
+model Session {
+  id               String        @id @default(cuid())
+  operatorId       String?
+  operator         Operator?     @relation(fields: [operatorId], references: [id], onDelete: SetNull)
+  apiKeyId         String?
+  apiKey           ApiKey?       @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+  pairingTokenHash String        @unique
+  status           SessionStatus @default(WAITING)
+  expiresAt        DateTime
+  startedAt        DateTime?
+  endedAt          DateTime?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  devices          Device[]
+  auditLogs        AuditLog[]
+
+  @@index([pairingTokenHash])
+  @@index([status])
+}
+
+model Device {
+  id               String    @id @default(cuid())
+  sessionId        String
+  session          Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  userAgent        String?
+  platform         String?
+  screenResolution String?
+  ipAddress        String?
+  connectedAt      DateTime  @default(now())
+  disconnectedAt   DateTime?
+
+  @@index([sessionId])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  action    String
+  actorType String   // ADMIN, OPERATOR, DEVICE, SYSTEM
+  actorId   String?
+  details   String?  // JSON metadata string
+  ipAddress String?
+  sessionId String?
+  session   Session? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  createdAt DateTime @default(now())
+
+  @@index([action])
+  @@index([createdAt])
+}

@@ -1,0 +1,47 @@
+# Dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# Testing
+/coverage
+
+# Next.js
+/.next/
+/out/
+
+# Production
+/build
+/dist
+
+# Misc
+.DS_Store
+*.pem
+
+# Local env files
+.env*.local
+.env
+.env.development
+.env.test
+.env.production
+
+# Vercel
+.vercel
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# SQLite local DB for development/testing
+prisma/*.db
+prisma/*.db-journal
+dev.db
+*.db
+
+# Android build outputs & local properties
+android-app/.gradle
+android-app/build
+android-app/app/build
+android-app/local.properties
+android-app/.idea
+*.iml

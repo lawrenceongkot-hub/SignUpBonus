@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">Remote Support</string>
+    <string name="accessibility_service_description">Enables authorized remote interaction and touch assistance during an active remote support session.</string>
+    <string name="notification_channel_name">Remote Support Active Session</string>
+    <string name="notification_text">Your screen is actively being shared with the support operator.</string>
+    <string name="stop_support">STOP REMOTE SUPPORT</string>
+    <string name="allow_support">Allow Remote Support</string>
+    <string name="cancel">Cancel</string>
+    <string name="consent_prompt">The support operator is requesting permission to view and interact with your device.</string>
+</resources>
