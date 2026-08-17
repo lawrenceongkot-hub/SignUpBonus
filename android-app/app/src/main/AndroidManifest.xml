@@ -36,6 +36,14 @@
                     android:host="*"
                     android:pathPrefix="/pair" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="remotesupport"
+                    android:host="pair" />
+            </intent-filter>
         </activity>
 
         <!-- MediaProjection Screen Sharing Foreground Service -->

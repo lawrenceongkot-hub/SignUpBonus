@@ -2,7 +2,21 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { useSearchParams, useParams } from 'next/navigation';
-import { Shield, ShieldAlert, Monitor, CheckCircle, XCircle, StopCircle, RefreshCw, Smartphone, Radio } from 'lucide-react';
+import {
+  Shield,
+  ShieldAlert,
+  Monitor,
+  CheckCircle,
+  XCircle,
+  StopCircle,
+  RefreshCw,
+  Smartphone,
+  Radio,
+  Camera,
+  ExternalLink,
+  Copy,
+  Check,
+} from 'lucide-react';
 
 type PairingState =
   | 'VALIDATING'
@@ -28,8 +42,11 @@ export default function MobilePairingPage() {
   const [state, setState] = useState<PairingState>('VALIDATING');
   const [operatorName, setOperatorName] = useState<string>('Support Operator');
   const [errorMessage, setErrorMessage] = useState<string>('');
+  const [isScreenCaptureRestricted, setIsScreenCaptureRestricted] = useState<boolean>(false);
+  const [streamType, setStreamType] = useState<'screen' | 'camera'>('screen');
   const [ripples, setRipples] = useState<Ripple[]>([]);
   const [streamInfo, setStreamInfo] = useState<{ resolution: string; fps: number }>({ resolution: '', fps: 0 });
+  const [copiedLink, setCopiedLink] = useState<boolean>(false);
 
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -104,27 +121,49 @@ export default function MobilePairingPage() {
     }
   };
 
-  // 2. Start WebRTC Screen Sharing after user consents
-  const handleAllowSupport = async () => {
+  // 2. Start WebRTC Stream (Screen or Camera) after user consents
+  const startStreaming = async (mode: 'screen' | 'camera') => {
     setState('CONNECTING');
+    setIsScreenCaptureRestricted(false);
+    setStreamType(mode);
 
     try {
-      // Step A: Request Real Screen Capture MediaStream
       let stream: MediaStream;
-      try {
-        // Modern browser screen sharing API
-        stream = await navigator.mediaDevices.getDisplayMedia({
-          video: {
-            displaySurface: 'monitor',
-            frameRate: { ideal: 30, max: 60 },
-          },
-          audio: false,
-        });
-      } catch (err: any) {
-        console.error('Screen capture permission denied or not supported:', err);
-        setErrorMessage('Screen capture permission was not granted. Please allow screen sharing to proceed.');
-        setState('ERROR');
-        return;
+
+      if (mode === 'screen') {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+          throw new Error('BROWSER_SCREEN_RESTRICTED');
+        }
+
+        try {
+          stream = await navigator.mediaDevices.getDisplayMedia({
+            video: {
+              displaySurface: 'monitor',
+              frameRate: { ideal: 30, max: 60 },
+            },
+            audio: false,
+          });
+        } catch (err: any) {
+          console.warn('Browser getDisplayMedia error on this device:', err);
+          throw new Error('BROWSER_SCREEN_RESTRICTED');
+        }
+      } else {
+        // Camera fallback for devices where browser restricts OS-level getDisplayMedia
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              facingMode: 'environment',
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+            },
+            audio: false,
+          });
+        } catch (camErr: any) {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false,
+          });
+        }
       }
 
       localStreamRef.current = stream;
@@ -141,7 +180,7 @@ export default function MobilePairingPage() {
         fps: Math.round(settings.frameRate || 30),
       });
 
-      // Step B: Inform backend & retrieve RTC ICE config
+      // Inform backend & retrieve RTC ICE config
       const startRes = await fetch(`/api/pair/${sessionId}/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -162,11 +201,10 @@ export default function MobilePairingPage() {
         iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
       };
 
-      // Step C: Connect to WebSocket Signaling Server
+      // Connect to WebSocket Signaling Server
       let wsUrl = process.env.NEXT_PUBLIC_WS_URL;
       if (!wsUrl || wsUrl === 'wss://signaling.example.com') {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        // For local dev, signaling runs on 8080; in prod, it can share port or sub-path
         const host = window.location.hostname;
         const port = window.location.port === '3000' ? '8080' : window.location.port;
         wsUrl = `${protocol}//${host}:${port}`;
@@ -178,7 +216,7 @@ export default function MobilePairingPage() {
       const pc = new RTCPeerConnection(rtcConfig);
       peerConnectionRef.current = pc;
 
-      // Add local screen tracks to peer connection
+      // Add local tracks to peer connection
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
       // Setup DataChannel for receiving interaction commands
@@ -257,19 +295,20 @@ export default function MobilePairingPage() {
 
       ws.onerror = (e) => {
         console.error('[SIGNALING] Mobile WebSocket signaling error:', e);
-        if (state === 'CONNECTING') {
-          setErrorMessage(`Unable to connect to signaling server at ${wsUrl}. Verify WebSocket URL.`);
-          setState('ERROR');
-        }
       };
 
       ws.onclose = (e) => {
         console.log('[SIGNALING] Mobile signaling connection closed:', e.code);
       };
     } catch (err: any) {
-      console.error('Connection setup failed:', err);
-      setErrorMessage(err.message || 'Failed to establish remote support connection.');
-      setState('ERROR');
+      console.error('Streaming setup error:', err);
+      if (err.message === 'BROWSER_SCREEN_RESTRICTED') {
+        setIsScreenCaptureRestricted(true);
+        setState('CONSENT');
+      } else {
+        setErrorMessage(err.message || 'Failed to establish remote support connection.');
+        setState('ERROR');
+      }
     }
   };
 
@@ -298,9 +337,14 @@ export default function MobilePairingPage() {
     }
   };
 
-  const handleCancel = () => {
-    setState('REJECTED');
+  const copyAppDeepLink = () => {
+    const fullUrl = window.location.href;
+    navigator.clipboard.writeText(fullUrl);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 3000);
   };
+
+  const appDeepLink = `remotesupport://pair?session=${sessionId}&token=${token}`;
 
   return (
     <div style={{
@@ -333,37 +377,38 @@ export default function MobilePairingPage() {
       )}
 
       {state === 'CONSENT' && (
-        <div className="glass-panel" style={{ width: '100%', maxWidth: '460px', padding: '32px 24px' }}>
-          <div style={{ textAlign: 'center', marginBottom: '24px' }}>
+        <div className="glass-panel" style={{ width: '100%', maxWidth: '460px', padding: '28px 22px' }}>
+          <div style={{ textAlign: 'center', marginBottom: '20px' }}>
             <div style={{
-              width: '60px',
-              height: '60px',
+              width: '56px',
+              height: '56px',
               borderRadius: '16px',
               background: 'rgba(59, 130, 246, 0.15)',
               display: 'inline-flex',
               alignItems: 'center',
               justifyContent: 'center',
-              marginBottom: '16px',
+              marginBottom: '12px',
               color: 'var(--accent-blue)',
               border: '1px solid rgba(59, 130, 246, 0.3)'
             }}>
-              <Smartphone size={32} />
+              <Smartphone size={28} />
             </div>
-            <h1 style={{ fontSize: '22px', fontWeight: '800', marginBottom: '8px' }}>REMOTE SUPPORT REQUEST</h1>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
+            <h1 style={{ fontSize: '20px', fontWeight: '800', marginBottom: '6px' }}>REMOTE SUPPORT REQUEST</h1>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>
               An enterprise technician is requesting remote assistance access.
             </p>
           </div>
 
+          {/* Session Details */}
           <div style={{
             background: 'rgba(0, 0, 0, 0.3)',
             borderRadius: '10px',
-            padding: '16px',
-            marginBottom: '20px',
-            fontSize: '14px',
+            padding: '14px 16px',
+            marginBottom: '18px',
+            fontSize: '13px',
             border: '1px solid var(--border-color)'
           }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
               <span style={{ color: 'var(--text-secondary)' }}>Operator:</span>
               <span style={{ fontWeight: '600', color: '#93c5fd' }}>{operatorName}</span>
             </div>
@@ -375,34 +420,87 @@ export default function MobilePairingPage() {
             </div>
           </div>
 
-          <div style={{
-            background: 'rgba(59, 130, 246, 0.1)',
-            border: '1px solid rgba(59, 130, 246, 0.25)',
-            borderRadius: '10px',
-            padding: '16px',
-            marginBottom: '24px',
-            fontSize: '14px',
-            lineHeight: '1.5',
-            color: '#e2e8f0'
-          }}>
-            <strong style={{ color: '#93c5fd', display: 'block', marginBottom: '6px' }}>Explicit Consent Required:</strong>
-            &ldquo;The support operator is requesting permission to view and interact with your device.&rdquo;
-          </div>
+          {/* Android OS Sandbox Notice if getDisplayMedia is restricted */}
+          {isScreenCaptureRestricted && (
+            <div style={{
+              background: 'rgba(245, 158, 11, 0.12)',
+              border: '1px solid rgba(245, 158, 11, 0.3)',
+              borderRadius: '10px',
+              padding: '14px',
+              marginBottom: '18px',
+              fontSize: '13px',
+              lineHeight: '1.45',
+              color: '#fef3c7'
+            }}>
+              <strong style={{ color: '#fbbf24', display: 'block', marginBottom: '4px' }}>
+                Android OS Browser Notice:
+              </strong>
+              Android browser security sandboxes restrict full-system screen capture to native apps with <code>MediaProjection</code>.
+              Choose an option below:
+            </div>
+          )}
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          {!isScreenCaptureRestricted && (
+            <div style={{
+              background: 'rgba(59, 130, 246, 0.1)',
+              border: '1px solid rgba(59, 130, 246, 0.25)',
+              borderRadius: '10px',
+              padding: '14px',
+              marginBottom: '20px',
+              fontSize: '13px',
+              lineHeight: '1.45',
+              color: '#e2e8f0'
+            }}>
+              <strong style={{ color: '#93c5fd', display: 'block', marginBottom: '4px' }}>Explicit Consent Required:</strong>
+              &ldquo;The support operator is requesting permission to view and interact with your device.&rdquo;
+            </div>
+          )}
+
+          {/* Support Actions */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {/* Native Android App Launcher */}
+            <a
+              href={appDeepLink}
+              className="btn-primary"
+              style={{ width: '100%', height: '46px', fontSize: '14px', textDecoration: 'none' }}
+            >
+              <ExternalLink size={18} /> Launch Remote Support Android App
+            </a>
+
+            {/* Direct Browser Screen Share */}
             <button
-              onClick={handleAllowSupport}
+              onClick={() => startStreaming('screen')}
               className="btn-success"
-              style={{ width: '100%', height: '48px', fontSize: '15px' }}
+              style={{ width: '100%', height: '46px', fontSize: '14px' }}
             >
-              <CheckCircle size={18} /> Allow Remote Support
+              <Monitor size={18} /> {isScreenCaptureRestricted ? 'Retry Browser Screen Share' : 'Allow Remote Support (Browser)'}
             </button>
+
+            {/* Camera Visual Stream Fallback */}
             <button
-              onClick={handleCancel}
+              onClick={() => startStreaming('camera')}
               className="btn-secondary"
-              style={{ width: '100%', height: '44px' }}
+              style={{ width: '100%', height: '42px', fontSize: '13px' }}
             >
-              <XCircle size={18} /> Cancel
+              <Camera size={16} /> Share Camera / Video Feed
+            </button>
+
+            {/* Copy Pairing Link for App */}
+            <button
+              onClick={copyAppDeepLink}
+              className="btn-secondary"
+              style={{ width: '100%', height: '38px', fontSize: '12px' }}
+            >
+              {copiedLink ? <Check size={14} /> : <Copy size={14} />}
+              {copiedLink ? 'Copied Session URL!' : 'Copy Pairing URL for App'}
+            </button>
+
+            <button
+              onClick={() => setState('REJECTED')}
+              className="btn-secondary"
+              style={{ width: '100%', height: '38px', fontSize: '12px', color: '#94a3b8' }}
+            >
+              <XCircle size={14} /> Cancel Request
             </button>
           </div>
         </div>
@@ -435,16 +533,16 @@ export default function MobilePairingPage() {
             color: 'var(--accent-green)',
             border: '1px solid rgba(16, 185, 129, 0.3)'
           }}>
-            <Monitor size={28} />
+            {streamType === 'screen' ? <Monitor size={28} /> : <Camera size={28} />}
           </div>
 
           <span className="badge badge-active" style={{ marginBottom: '12px' }}>
-            ● Screen Sharing Active
+            ● {streamType === 'screen' ? 'Screen Sharing Active' : 'Camera Stream Active'}
           </span>
 
           <h2 style={{ fontSize: '20px', fontWeight: '700', marginBottom: '6px' }}>Remote Support Active</h2>
           <p style={{ color: 'var(--text-secondary)', fontSize: '14px', marginBottom: '20px' }}>
-            Your screen is currently being streamed to <strong>{operatorName}</strong>.
+            Your stream is currently being transmitted to <strong>{operatorName}</strong>.
           </p>
 
           <div style={{
