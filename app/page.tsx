@@ -13,9 +13,7 @@ import {
   Monitor,
   Smartphone,
   Activity,
-  Wifi,
   MousePointer,
-  CornerDownLeft,
   ChevronLeft,
   Square,
   Circle,
@@ -23,8 +21,8 @@ import {
   AlertCircle,
   Lock,
   Send,
-  Zap,
 } from 'lucide-react';
+import { UniversalSignalingClient } from '@/lib/signaling-client';
 
 type OperatorStatus =
   | 'UNAUTHENTICATED'
@@ -85,7 +83,7 @@ export default function OperatorDashboard() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+  const signalingRef = useRef<UniversalSignalingClient | null>(null);
   const statsIntervalRef = useRef<any>(null);
   const dragStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
 
@@ -211,76 +209,49 @@ export default function OperatorDashboard() {
         }
       };
 
-      // WebSocket Signaling
-      let wsUrl = process.env.NEXT_PUBLIC_WS_URL;
-      if (!wsUrl || wsUrl === 'wss://signaling.example.com') {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const host = window.location.hostname;
-        const port = window.location.port === '3000' ? '8080' : window.location.port;
-        wsUrl = `${protocol}//${host}:${port}`;
-      }
+      // Universal Signaling Client (Vercel Serverless & WebSocket support)
+      const signaling = new UniversalSignalingClient(
+        sessionId,
+        'operator',
+        rawToken,
+        async (msg) => {
+          try {
+            if (msg.type === 'offer' && msg.offer) {
+              console.log('[WEBRTC] Operator received SDP Offer');
+              setStatus('CONNECTING');
+              await pc.setRemoteDescription(new RTCSessionDescription(msg.offer));
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
 
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
+              console.log('[WEBRTC] Operator sending SDP Answer');
+              signaling.send({
+                type: 'answer',
+                answer,
+              });
+            } else if (msg.type === 'ice-candidate' && msg.candidate) {
+              await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+            } else if (msg.type === 'session-stopped') {
+              handleStopSession(false);
+            }
+          } catch (e) {
+            console.error('[WEBRTC] Error processing signaling on operator:', e);
+          }
+        }
+      );
+
+      signalingRef.current = signaling;
 
       pc.onicecandidate = (event) => {
-        if (event.candidate && ws.readyState === WebSocket.OPEN) {
-          ws.send(
-            JSON.stringify({
-              type: 'ice-candidate',
-              sessionId,
-              role: 'operator',
-              candidate: event.candidate,
-            })
-          );
+        if (event.candidate) {
+          signaling.send({
+            type: 'ice-candidate',
+            candidate: event.candidate,
+          });
         }
       };
 
-      ws.onopen = () => {
-        ws.send(JSON.stringify({ type: 'join', sessionId, role: 'operator', token: rawToken }));
-      };
+      signaling.connect();
 
-      ws.onmessage = async (event) => {
-        try {
-          const data = JSON.parse(event.data);
-
-          if (data.type === 'peer-joined' && data.role === 'device') {
-            setStatus('PAIRING');
-          } else if (data.type === 'offer') {
-            setStatus('CONNECTING');
-            await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-
-            ws.send(
-              JSON.stringify({
-                type: 'answer',
-                sessionId,
-                role: 'operator',
-                answer,
-              })
-            );
-          } else if (data.type === 'ice-candidate' && data.candidate) {
-            await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-          } else if (data.type === 'session-stopped') {
-            handleStopSession(false);
-          }
-        } catch (e) {
-          console.error('Signaling parse error:', e);
-        }
-      };
-
-      ws.onerror = (e) => {
-        console.error('[SIGNALING] WebSocket connection error:', e);
-        setLastAction(`Signaling error connecting to ${wsUrl}. Verify signaling server is active.`);
-      };
-
-      ws.onclose = (e) => {
-        console.log('[SIGNALING] WebSocket connection closed:', e.code, e.reason);
-        if (status !== 'SESSION_ENDED') {
-          setLastAction(`Signaling disconnected (code ${e.code}).`);
-        }
-      };
     } catch (err) {
       console.error('Signaling init error:', err);
       setStatus('FAILED');
@@ -338,16 +309,13 @@ export default function OperatorDashboard() {
     if (dataChannelRef.current && dataChannelRef.current.readyState === 'open') {
       dataChannelRef.current.send(JSON.stringify(command));
       setLastAction(`Sent: ${command.type}`);
-    } else if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && sessionData) {
-      // Fallback via WebSocket
-      wsRef.current.send(
-        JSON.stringify({
-          type: 'interaction',
-          sessionId: sessionData.id,
-          payload: command,
-        })
-      );
-      setLastAction(`Sent: ${command.type} (via WSS)`);
+    } else if (signalingRef.current) {
+      // Fallback via Universal Signaling
+      signalingRef.current.send({
+        type: 'interaction',
+        payload: command,
+      });
+      setLastAction(`Sent: ${command.type} (via Signaling Relay)`);
     }
   };
 
@@ -418,9 +386,10 @@ export default function OperatorDashboard() {
       }
     }
 
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'stop-session', sessionId: sessionData?.id, role: 'operator' }));
-      wsRef.current.close();
+    if (signalingRef.current) {
+      signalingRef.current.send({ type: 'stop-session' });
+      signalingRef.current.close();
+      signalingRef.current = null;
     }
 
     if (dataChannelRef.current) dataChannelRef.current.close();

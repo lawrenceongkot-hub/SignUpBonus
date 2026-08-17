@@ -14,7 +14,9 @@ import {
   Radio,
   ChevronRight,
   ShieldAlert,
+  Camera,
 } from 'lucide-react';
+import { UniversalSignalingClient } from '@/lib/signaling-client';
 
 type PairingState =
   | 'VALIDATING'
@@ -47,7 +49,7 @@ export default function MobilePairingPage() {
 
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+  const signalingRef = useRef<UniversalSignalingClient | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
 
   // 1. Validate session & token on load
@@ -95,9 +97,10 @@ export default function MobilePairingPage() {
         }).catch(() => {});
       }
 
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'stop-session', sessionId, role: 'device' }));
-        wsRef.current.close();
+      if (signalingRef.current) {
+        signalingRef.current.send({ type: 'stop-session' });
+        signalingRef.current.close();
+        signalingRef.current = null;
       }
 
       if (dataChannelRef.current) {
@@ -118,7 +121,7 @@ export default function MobilePairingPage() {
     }
   };
 
-  // 2. Start Real WebRTC Stream
+  // 2. Start Real WebRTC Stream & Exchange Offer
   const handleStartSupport = async (forceCamera = false) => {
     setState('CONNECTING');
     setIsAndroidRestricted(false);
@@ -137,14 +140,13 @@ export default function MobilePairingPage() {
           });
           setStreamType('screen');
         } catch (err: any) {
-          console.warn('Browser getDisplayMedia error on mobile:', err);
-          // If browser restricts getDisplayMedia on mobile, try native launch or camera fallback
+          console.warn('Browser getDisplayMedia error on mobile, trying camera fallback:', err);
           setIsAndroidRestricted(true);
           setState('CONSENT_MODAL');
           return;
         }
       } else {
-        // Camera fallback for devices where browser restricts OS getDisplayMedia
+        // High quality camera stream fallback for mobile browsers
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: 'environment',
@@ -162,7 +164,7 @@ export default function MobilePairingPage() {
         stopSupportSession(true);
       };
 
-      // Notify backend of session start
+      // Notify backend & fetch STUN/TURN ICE config
       const startRes = await fetch(`/api/pair/${sessionId}/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -175,31 +177,17 @@ export default function MobilePairingPage() {
       });
 
       const startData = await startRes.json();
-      if (!startRes.ok) {
-        throw new Error(startData.error || 'Failed to start session');
-      }
-
       const rtcConfig = startData.rtcConfig || {
         iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
       };
 
-      // Connect to WebSocket Signaling Server
-      let wsUrl = process.env.NEXT_PUBLIC_WS_URL;
-      if (!wsUrl || wsUrl === 'wss://signaling.example.com') {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const host = window.location.hostname;
-        const port = window.location.port === '3000' ? '8080' : window.location.port;
-        wsUrl = `${protocol}//${host}:${port}`;
-      }
-
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-
       const pc = new RTCPeerConnection(rtcConfig);
       peerConnectionRef.current = pc;
 
+      // Add local media tracks
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
+      // Setup DataChannel for receiving interaction commands
       pc.ondatachannel = (event) => {
         const dc = event.channel;
         dataChannelRef.current = dc;
@@ -214,20 +202,43 @@ export default function MobilePairingPage() {
         };
       };
 
+      // Initialize Universal Signaling Client (handles Vercel Serverless & WebSocket)
+      const signaling = new UniversalSignalingClient(
+        sessionId,
+        'device',
+        token,
+        async (msg) => {
+          try {
+            if (msg.type === 'answer' && msg.answer) {
+              console.log('[WEBRTC] Device received SDP Answer');
+              await pc.setRemoteDescription(new RTCSessionDescription(msg.answer));
+            } else if (msg.type === 'ice-candidate' && msg.candidate) {
+              await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+            } else if (msg.type === 'interaction') {
+              handleRemoteCommand(msg.payload);
+            } else if (msg.type === 'stop-session') {
+              stopSupportSession(false);
+            }
+          } catch (err) {
+            console.error('Error processing signaling message on device:', err);
+          }
+        }
+      );
+
+      signalingRef.current = signaling;
+
+      // Relay ICE candidates
       pc.onicecandidate = (event) => {
-        if (event.candidate && ws.readyState === WebSocket.OPEN) {
-          ws.send(
-            JSON.stringify({
-              type: 'ice-candidate',
-              sessionId,
-              role: 'device',
-              candidate: event.candidate,
-            })
-          );
+        if (event.candidate) {
+          signaling.send({
+            type: 'ice-candidate',
+            candidate: event.candidate,
+          });
         }
       };
 
       pc.onconnectionstatechange = () => {
+        console.log('[WEBRTC] Device connection state:', pc.connectionState);
         if (pc.connectionState === 'connected') {
           setState('STREAMING');
         } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
@@ -235,46 +246,21 @@ export default function MobilePairingPage() {
         }
       };
 
-      ws.onopen = () => {
-        ws.send(JSON.stringify({ type: 'join', sessionId, role: 'device', token }));
-      };
+      // Connect signaling and create SDP Offer immediately
+      signaling.connect();
 
-      ws.onmessage = async (event) => {
-        try {
-          const data = JSON.parse(event.data);
+      const offer = await pc.createOffer({
+        offerToReceiveVideo: false,
+        offerToReceiveAudio: false,
+      });
+      await pc.setLocalDescription(offer);
 
-          if (data.type === 'peer-joined' && data.role === 'operator') {
-            const offer = await pc.createOffer({
-              offerToReceiveVideo: false,
-              offerToReceiveAudio: false,
-            });
-            await pc.setLocalDescription(offer);
+      console.log('[WEBRTC] Device sending SDP Offer');
+      signaling.send({
+        type: 'offer',
+        offer,
+      });
 
-            ws.send(
-              JSON.stringify({
-                type: 'offer',
-                sessionId,
-                role: 'device',
-                offer,
-              })
-            );
-          } else if (data.type === 'answer') {
-            await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
-          } else if (data.type === 'ice-candidate' && data.candidate) {
-            await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-          } else if (data.type === 'interaction') {
-            handleRemoteCommand(data.payload);
-          } else if (data.type === 'session-stopped') {
-            stopSupportSession(false);
-          }
-        } catch (err) {
-          console.error('Signaling error:', err);
-        }
-      };
-
-      ws.onerror = (e) => {
-        console.error('WebSocket signaling error:', e);
-      };
     } catch (err: any) {
       console.error('Streaming start error:', err);
       setErrorMessage(err.message || 'Unable to start live support connection.');
@@ -342,7 +328,6 @@ export default function MobilePairingPage() {
       {/* 2. Main Mobile Landing Page — Clean Signup & 150 Bonus */}
       {state === 'LANDING' && (
         <div className="glass-panel" style={{ width: '100%', maxWidth: '420px', padding: '36px 24px', textAlign: 'center' }}>
-          {/* Bonus Badge */}
           <div style={{
             display: 'inline-flex',
             alignItems: 'center',
@@ -378,7 +363,6 @@ export default function MobilePairingPage() {
             Claim your 150 welcome bonus instantly. Get assisted onboarding and instant account verification.
           </p>
 
-          {/* Value Props */}
           <div style={{
             display: 'flex',
             flexDirection: 'column',
@@ -404,7 +388,6 @@ export default function MobilePairingPage() {
             </div>
           </div>
 
-          {/* Primary Action */}
           <button
             onClick={() => setState('CONSENT_MODAL')}
             className="btn-primary"
@@ -448,7 +431,6 @@ export default function MobilePairingPage() {
             </p>
           </div>
 
-          {/* Transparent Consent Box */}
           <div style={{
             background: 'rgba(59, 130, 246, 0.08)',
             border: '1px solid rgba(59, 130, 246, 0.25)',
@@ -467,20 +449,20 @@ export default function MobilePairingPage() {
 
           {isAndroidRestricted ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              <a
-                href={appDeepLink}
-                className="btn-primary"
-                style={{ width: '100%', height: '48px', fontSize: '14px', textDecoration: 'none' }}
-              >
-                <ExternalLink size={18} /> Launch Remote Support App
-              </a>
               <button
                 onClick={() => handleStartSupport(true)}
                 className="btn-success"
-                style={{ width: '100%', height: '44px', fontSize: '13px' }}
+                style={{ width: '100%', height: '48px', fontSize: '14px', fontWeight: '700' }}
               >
-                Continue via In-Browser Feed
+                <Camera size={18} /> Continue with In-Browser Live Video
               </button>
+              <a
+                href={appDeepLink}
+                className="btn-primary"
+                style={{ width: '100%', height: '44px', fontSize: '13px', textDecoration: 'none' }}
+              >
+                <ExternalLink size={16} /> Open in Android Companion App
+              </a>
               <button
                 onClick={() => setState('LANDING')}
                 className="btn-secondary"
