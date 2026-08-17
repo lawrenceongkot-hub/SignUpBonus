@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { prisma, ensureDatabaseInitialized } from '@/lib/prisma';
 import { hashSecret } from '@/lib/auth';
 import { logAuditEvent } from '@/lib/audit';
 
@@ -16,8 +16,10 @@ export async function POST(req: NextRequest) {
         details: { reason: 'Malformed API key format' },
         ipAddress: ip,
       });
-      return NextResponse.json({ error: 'Invalid API key format' }, { status: 401 });
+      return NextResponse.json({ error: 'Invalid API key format. Expected rs_live_...' }, { status: 401 });
     }
+
+    await ensureDatabaseInitialized();
 
     const keyHash = hashSecret(apiKey);
 
@@ -29,10 +31,10 @@ export async function POST(req: NextRequest) {
       await logAuditEvent({
         action: 'OPERATOR_AUTH_FAILED',
         actorType: 'OPERATOR',
-        details: { reason: 'Key not found' },
+        details: { reason: 'Key not found in database' },
         ipAddress: ip,
       });
-      return NextResponse.json({ error: 'Invalid or revoked API key' }, { status: 401 });
+      return NextResponse.json({ error: 'Invalid or non-existent API key.' }, { status: 401 });
     }
 
     if (record.revokedAt) {
@@ -42,7 +44,7 @@ export async function POST(req: NextRequest) {
         details: { reason: 'Key revoked', keyId: record.id },
         ipAddress: ip,
       });
-      return NextResponse.json({ error: 'This API key has been revoked' }, { status: 401 });
+      return NextResponse.json({ error: 'This API key has been revoked by an administrator.' }, { status: 401 });
     }
 
     if (record.expiresAt && record.expiresAt < new Date()) {
@@ -52,7 +54,7 @@ export async function POST(req: NextRequest) {
         details: { reason: 'Key expired', keyId: record.id },
         ipAddress: ip,
       });
-      return NextResponse.json({ error: 'This API key has expired' }, { status: 401 });
+      return NextResponse.json({ error: 'This API key has expired.' }, { status: 401 });
     }
 
     // Update last used timestamp
@@ -73,8 +75,8 @@ export async function POST(req: NextRequest) {
       keyPrefix: record.keyPrefix,
       label: record.label,
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Operator verify error:', error);
-    return NextResponse.json({ error: 'Authentication failed' }, { status: 500 });
+    return NextResponse.json({ error: 'Authentication failed: ' + (error?.message || 'Internal database error') }, { status: 500 });
   }
 }

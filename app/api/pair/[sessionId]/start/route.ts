@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { prisma, ensureDatabaseInitialized } from '@/lib/prisma';
 import { hashSecret } from '@/lib/auth';
 import { getWebRtcConfiguration } from '@/lib/webrtc-config';
 import { logAuditEvent } from '@/lib/audit';
@@ -15,6 +15,8 @@ export async function POST(req: NextRequest, { params }: { params: { sessionId: 
     if (!token || typeof token !== 'string') {
       return NextResponse.json({ error: 'Pairing token is required' }, { status: 400 });
     }
+
+    await ensureDatabaseInitialized();
 
     const tokenHash = hashSecret(token);
 
@@ -65,8 +67,8 @@ export async function POST(req: NextRequest, { params }: { params: { sessionId: 
       status: updated.status,
       rtcConfig,
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Failed to start session:', error);
-    return NextResponse.json({ error: 'Failed to start session' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to start session: ' + (error?.message || 'Database error') }, { status: 500 });
   }
 }

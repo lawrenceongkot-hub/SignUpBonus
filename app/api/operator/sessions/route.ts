@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { prisma, ensureDatabaseInitialized } from '@/lib/prisma';
 import { hashSecret, generatePairingToken, generateSessionId } from '@/lib/auth';
 import { logAuditEvent } from '@/lib/audit';
 
@@ -10,8 +10,10 @@ export async function POST(req: NextRequest) {
     const ip = req.headers.get('x-forwarded-for') || req.ip || 'unknown';
 
     if (!apiKey || typeof apiKey !== 'string' || !apiKey.startsWith('rs_live_')) {
-      return NextResponse.json({ error: 'Valid operator API key required' }, { status: 401 });
+      return NextResponse.json({ error: 'Valid operator API key required (rs_live_...)' }, { status: 401 });
     }
+
+    await ensureDatabaseInitialized();
 
     const keyHash = hashSecret(apiKey);
     const keyRecord = await prisma.apiKey.findUnique({
@@ -42,7 +44,7 @@ export async function POST(req: NextRequest) {
     // Priority: PUBLIC_APP_URL env var > request host header
     let baseUrl = process.env.PUBLIC_APP_URL;
     if (!baseUrl || baseUrl === 'https://support.example.com') {
-      const host = req.headers.get('host') || 'localhost:3000';
+      const host = req.headers.get('x-forwarded-host') || req.headers.get('host') || 'localhost:3000';
       const protocol = req.headers.get('x-forwarded-proto') || (host.includes('localhost') ? 'http' : 'https');
       baseUrl = `${protocol}://${host}`;
     }
@@ -68,11 +70,11 @@ export async function POST(req: NextRequest) {
         expiresAt: session.expiresAt.toISOString(),
         status: session.status,
         pairingUrl,
-        rawToken, // Provided to operator dashboard to initiate WebRTC session room
+        rawToken, // Provided to operator dashboard to join WebRTC room
       },
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Session creation error:', error);
-    return NextResponse.json({ error: 'Failed to create session' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to create session: ' + (error?.message || 'Database error') }, { status: 500 });
   }
 }

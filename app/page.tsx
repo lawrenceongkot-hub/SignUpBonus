@@ -269,9 +269,22 @@ export default function OperatorDashboard() {
           console.error('Signaling parse error:', e);
         }
       };
+
+      ws.onerror = (e) => {
+        console.error('[SIGNALING] WebSocket connection error:', e);
+        setLastAction(`Signaling error connecting to ${wsUrl}. Verify signaling server is active.`);
+      };
+
+      ws.onclose = (e) => {
+        console.log('[SIGNALING] WebSocket connection closed:', e.code, e.reason);
+        if (status !== 'SESSION_ENDED') {
+          setLastAction(`Signaling disconnected (code ${e.code}).`);
+        }
+      };
     } catch (err) {
       console.error('Signaling init error:', err);
       setStatus('FAILED');
+      setLastAction('Failed to initialize signaling connection.');
     }
   };
 

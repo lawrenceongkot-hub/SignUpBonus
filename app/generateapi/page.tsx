@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { Key, Shield, ShieldCheck, Lock, Copy, Check, RefreshCw, AlertTriangle, LogOut, ArrowLeft } from 'lucide-react';
+import { Key, Shield, ShieldCheck, Lock, Copy, Check, RefreshCw, AlertTriangle, LogOut, ArrowLeft, Database } from 'lucide-react';
 
 interface ApiKeyItem {
   id: string;
@@ -33,6 +33,7 @@ export default function GenerateApiPage() {
   const [generating, setGenerating] = useState<boolean>(false);
   const [newKey, setNewKey] = useState<NewlyGeneratedKey | null>(null);
   const [copied, setCopied] = useState<boolean>(false);
+  const [genError, setGenError] = useState<string>('');
 
   const [keysList, setKeysList] = useState<ApiKeyItem[]>([]);
   const [fetchingKeys, setFetchingKeys] = useState<boolean>(false);
@@ -40,6 +41,7 @@ export default function GenerateApiPage() {
   // Check if admin is already authenticated via cookie
   const fetchKeys = async () => {
     setFetchingKeys(true);
+    setGenError('');
     try {
       const res = await fetch('/api/admin/keys');
       if (res.status === 401) {
@@ -48,6 +50,9 @@ export default function GenerateApiPage() {
         const data = await res.json();
         setKeysList(data.keys || []);
         setIsAuthenticated(true);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        if (data.error) setGenError(data.error);
       }
     } catch (err) {
       console.error('Failed to fetch keys:', err);
@@ -103,6 +108,7 @@ export default function GenerateApiPage() {
     e.preventDefault();
     setGenerating(true);
     setCopied(false);
+    setGenError('');
 
     try {
       const res = await fetch('/api/admin/keys', {
@@ -118,10 +124,10 @@ export default function GenerateApiPage() {
         setKeyLabel('');
         fetchKeys();
       } else {
-        alert(data.error || 'Failed to generate API key');
+        setGenError(data.error || 'Failed to generate API key. Please check PostgreSQL database connection.');
       }
-    } catch (err) {
-      alert('Network error while generating API key');
+    } catch (err: any) {
+      setGenError(err.message || 'Network error while contacting API key service.');
     } finally {
       setGenerating(false);
     }
@@ -308,6 +314,26 @@ export default function GenerateApiPage() {
         <p style={{ color: 'var(--text-secondary)', fontSize: '14px', marginBottom: '20px' }}>
           Generate a high-entropy, cryptographically random API key (256-bit entropy). Keys are stored as SHA-256 hashes in PostgreSQL and are never displayed again after generation.
         </p>
+
+        {genError && (
+          <div style={{
+            background: 'rgba(239, 68, 68, 0.15)',
+            border: '1px solid rgba(239, 68, 68, 0.3)',
+            color: '#fca5a5',
+            padding: '14px 16px',
+            borderRadius: '8px',
+            marginBottom: '20px',
+            fontSize: '13px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px'
+          }}>
+            <AlertTriangle size={20} style={{ flexShrink: 0 }} />
+            <div>
+              <strong>Generation Error:</strong> {genError}
+            </div>
+          </div>
+        )}
 
         <form onSubmit={handleGenerateKey} style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
           <input

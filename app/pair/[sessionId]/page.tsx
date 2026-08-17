@@ -256,11 +256,15 @@ export default function MobilePairingPage() {
       };
 
       ws.onerror = (e) => {
-        console.error('WebSocket signaling error:', e);
+        console.error('[SIGNALING] Mobile WebSocket signaling error:', e);
+        if (state === 'CONNECTING') {
+          setErrorMessage(`Unable to connect to signaling server at ${wsUrl}. Verify WebSocket URL.`);
+          setState('ERROR');
+        }
       };
 
-      ws.onclose = () => {
-        console.log('Signaling connection closed');
+      ws.onclose = (e) => {
+        console.log('[SIGNALING] Mobile signaling connection closed:', e.code);
       };
     } catch (err: any) {
       console.error('Connection setup failed:', err);
