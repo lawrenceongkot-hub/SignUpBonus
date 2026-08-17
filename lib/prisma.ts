@@ -188,6 +188,18 @@ export async function ensureDatabaseInitialized(): Promise<void> {
       );
     `);
 
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "SignalingMessage" (
+        "id" SERIAL NOT NULL,
+        "sessionId" TEXT NOT NULL,
+        "fromRole" TEXT NOT NULL,
+        "type" TEXT NOT NULL,
+        "payload" TEXT NOT NULL,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "SignalingMessage_pkey" PRIMARY KEY ("id")
+      );
+    `);
+
     // 3. Create Indexes safely
     await prisma.$executeRawUnsafe(`
       CREATE UNIQUE INDEX IF NOT EXISTS "Operator_email_key" ON "Operator"("email");
@@ -200,6 +212,8 @@ export async function ensureDatabaseInitialized(): Promise<void> {
       CREATE INDEX IF NOT EXISTS "Device_sessionId_idx" ON "Device"("sessionId");
       CREATE INDEX IF NOT EXISTS "AuditLog_action_idx" ON "AuditLog"("action");
       CREATE INDEX IF NOT EXISTS "AuditLog_createdAt_idx" ON "AuditLog"("createdAt");
+      CREATE INDEX IF NOT EXISTS "SignalingMessage_sessionId_id_idx" ON "SignalingMessage"("sessionId", "id");
+      CREATE INDEX IF NOT EXISTS "SignalingMessage_createdAt_idx" ON "SignalingMessage"("createdAt");
     `);
 
     globalForPrisma.dbInitialized = true;
