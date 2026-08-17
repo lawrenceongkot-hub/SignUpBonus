@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { Key, Shield, ShieldCheck, Lock, Copy, Check, RefreshCw, AlertTriangle, LogOut, ArrowLeft, Database } from 'lucide-react';
+import { Key, Shield, ShieldCheck, Lock, Copy, Check, RefreshCw, AlertTriangle, LogOut, ArrowLeft, Database, CheckCircle2 } from 'lucide-react';
 
 interface ApiKeyItem {
   id: string;
@@ -21,6 +21,14 @@ interface NewlyGeneratedKey {
   label: string;
 }
 
+interface DbHealth {
+  connected: boolean;
+  provider: string;
+  sourceVariable: string;
+  tablesReady: boolean;
+  error?: string;
+}
+
 export default function GenerateApiPage() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
@@ -37,12 +45,21 @@ export default function GenerateApiPage() {
 
   const [keysList, setKeysList] = useState<ApiKeyItem[]>([]);
   const [fetchingKeys, setFetchingKeys] = useState<boolean>(false);
+  const [dbHealth, setDbHealth] = useState<DbHealth | null>(null);
 
-  // Check if admin is already authenticated via cookie
-  const fetchKeys = async () => {
+  // Check database health & keys
+  const fetchKeysAndHealth = async () => {
     setFetchingKeys(true);
     setGenError('');
     try {
+      // 1. Fetch DB Health
+      const healthRes = await fetch('/api/admin/db-health');
+      if (healthRes.ok) {
+        const healthData = await healthRes.json();
+        setDbHealth(healthData);
+      }
+
+      // 2. Fetch Keys
       const res = await fetch('/api/admin/keys');
       if (res.status === 401) {
         setIsAuthenticated(false);
@@ -55,7 +72,7 @@ export default function GenerateApiPage() {
         if (data.error) setGenError(data.error);
       }
     } catch (err) {
-      console.error('Failed to fetch keys:', err);
+      console.error('Failed to fetch keys or DB health:', err);
     } finally {
       setFetchingKeys(false);
       setLoading(false);
@@ -63,7 +80,7 @@ export default function GenerateApiPage() {
   };
 
   useEffect(() => {
-    fetchKeys();
+    fetchKeysAndHealth();
   }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -83,7 +100,7 @@ export default function GenerateApiPage() {
       if (res.ok) {
         setIsAuthenticated(true);
         setPassword('');
-        fetchKeys();
+        fetchKeysAndHealth();
       } else {
         setLoginError(data.error || 'Authentication failed');
       }
@@ -122,9 +139,9 @@ export default function GenerateApiPage() {
       if (res.ok && data.apiKey) {
         setNewKey(data.apiKey);
         setKeyLabel('');
-        fetchKeys();
+        fetchKeysAndHealth();
       } else {
-        setGenError(data.error || 'Failed to generate API key. Please check PostgreSQL database connection.');
+        setGenError(data.error || 'Failed to generate API key. Verify PostgreSQL DATABASE_URL.');
       }
     } catch (err: any) {
       setGenError(err.message || 'Network error while contacting API key service.');
@@ -144,7 +161,7 @@ export default function GenerateApiPage() {
       });
 
       if (res.ok) {
-        fetchKeys();
+        fetchKeysAndHealth();
       } else {
         const data = await res.json();
         alert(data.error || 'Failed to revoke key');
@@ -295,6 +312,23 @@ export default function GenerateApiPage() {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          {dbHealth && (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '6px 12px',
+              borderRadius: '20px',
+              fontSize: '12px',
+              fontWeight: '600',
+              background: dbHealth.connected ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+              border: `1px solid ${dbHealth.connected ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
+              color: dbHealth.connected ? '#34d399' : '#f87171',
+            }}>
+              <Database size={14} />
+              <span>{dbHealth.connected ? `DB: ${dbHealth.sourceVariable}` : 'DB Not Connected'}</span>
+            </div>
+          )}
           <Link href="/" className="btn-secondary">
             <ArrowLeft size={16} /> Operator Dashboard
           </Link>
@@ -303,6 +337,36 @@ export default function GenerateApiPage() {
           </button>
         </div>
       </div>
+
+      {/* Database Not Connected Banner Guide */}
+      {dbHealth && !dbHealth.connected && (
+        <div style={{
+          background: 'rgba(239, 68, 68, 0.12)',
+          border: '1px solid rgba(239, 68, 68, 0.3)',
+          borderRadius: '12px',
+          padding: '20px',
+          marginBottom: '24px'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+            <AlertTriangle size={20} style={{ color: '#f87171' }} />
+            <h3 style={{ fontSize: '16px', fontWeight: '700', color: '#f87171' }}>
+              Action Required: Configure DATABASE_URL in Vercel
+            </h3>
+          </div>
+          <p style={{ fontSize: '13px', color: '#cbd5e1', lineHeight: '1.5', marginBottom: '12px' }}>
+            The application requires a PostgreSQL database to securely store and authenticate hashed API keys and sessions.
+          </p>
+          <div style={{ background: 'rgba(0, 0, 0, 0.3)', padding: '12px 16px', borderRadius: '8px', fontSize: '13px', color: '#93c5fd' }}>
+            <strong>How to configure in Vercel:</strong>
+            <ol style={{ paddingLeft: '20px', marginTop: '6px', lineHeight: '1.6' }}>
+              <li>Go to your project on <a href="https://vercel.com/dashboard" target="_blank" rel="noreferrer" style={{ textDecoration: 'underline' }}>Vercel Dashboard</a>.</li>
+              <li>Navigate to <strong>Storage</strong> tab &rarr; Click <strong>Create Database</strong> &rarr; Select <strong>Postgres (Neon)</strong> &rarr; Click <strong>Connect</strong>.</li>
+              <li>Or go to <strong>Settings</strong> &rarr; <strong>Environment Variables</strong> &rarr; Add <code>DATABASE_URL</code> with your PostgreSQL connection URL.</li>
+              <li>Redeploy your project for the changes to take effect.</li>
+            </ol>
+          </div>
+        </div>
+      )}
 
       {/* API Key Generation Card */}
       <div className="glass-panel" style={{ padding: '28px', marginBottom: '28px' }}>
@@ -410,7 +474,7 @@ export default function GenerateApiPage() {
             <Shield size={20} style={{ color: 'var(--accent-blue)' }} />
             <h2 style={{ fontSize: '18px', fontWeight: '700' }}>Active API Keys & Revocation</h2>
           </div>
-          <button onClick={fetchKeys} className="btn-secondary" style={{ padding: '6px 12px', fontSize: '12px' }}>
+          <button onClick={fetchKeysAndHealth} className="btn-secondary" style={{ padding: '6px 12px', fontSize: '12px' }}>
             <RefreshCw size={14} className={fetchingKeys ? 'pulse' : ''} /> Refresh
           </button>
         </div>
